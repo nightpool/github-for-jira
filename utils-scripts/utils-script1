@@ -1,0 +1,18 @@
+#!/bin/sh
+
+echo "Running command to fetch heapdump"
+kill -USR2 $(pgrep -n node)
+
+# Send profile to S3
+FILENAME=`ls /app/*heap* | xargs -n 1 basename |tail -1`
+echo "/app/$FILENAME"
+S3_URL="s3://micros-runcmd-${MICROS_ENV}/${MICROS_SERVICE}/heap_collection/"
+echo "s3 url to upload files $S3_URL"
+aws s3 cp "$FILENAME" "$S3_URL" --only-show-errors
+aws s3 presign "$S3_URL" --expires-in=604800
+
+# cleanup
+echo "clean up file created"
+rm /app/*heap*
+
+echo "Done!"
