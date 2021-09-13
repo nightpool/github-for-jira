@@ -5,6 +5,7 @@ RUN apk add g++ make python3
 
 COPY . /app
 COPY ./utils-scripts/utils-script1 /usr/local/bin/utils-script1
+RUN chmod +x /usr/local/bin/utils-script1
 WORKDIR /app
 
 # Installing packages
