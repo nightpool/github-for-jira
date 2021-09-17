@@ -13,6 +13,8 @@ config.logging = config.disable_sql_logging
 	? undefined
 	: (query, ms) => logger.trace({ ms }, query);
 
+logger.warn({}, `bgvozdev testing ` + JSON.stringify(process.env[config.use_env_variable]) + ' ' + process.env.DATABASE_URL)
+
 export const sequelize = config.use_env_variable
 	? new Sequelize.Sequelize(process.env[config.use_env_variable], config)
 	: new Sequelize.Sequelize(config);

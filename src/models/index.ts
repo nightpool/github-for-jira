@@ -3,6 +3,7 @@ import SubscriptionModel from "./subscription";
 import Sequelize, { DataTypes } from "sequelize";
 import EncryptedField from "sequelize-encrypted";
 import { sequelize } from "./sequelize";
+import logger from "../config/logger";
 
 // TODO: need to move this into a function
 if (!process.env.STORAGE_SECRET) {
@@ -40,6 +41,14 @@ SubscriptionModel?.init(
 	},
 	{ sequelize }
 );
+
+SubscriptionModel.findOne().then(item => {
+	logger.warn({}, "bgvozdev testing " + JSON.stringify(item));
+})
+
+InstallationModel.findOne().then(item => {
+	logger.warn({}, "bgvozdev testing " + JSON.stringify(item));
+})
 
 export const Installation = InstallationModel;
 export const Subscription = SubscriptionModel;
