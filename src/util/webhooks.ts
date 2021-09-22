@@ -18,7 +18,7 @@ export const calculateProcessingTimeInSeconds = (
 	);
 
 	const tags = {
-		name: webhookName,
+		webhookName,
 		status: status?.toString() || "none",
 	};
 
