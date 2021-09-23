@@ -11,15 +11,16 @@ export const calculateProcessingTimeInSeconds = (
 ): number => {
 	const timeToProcessWebhookEvent =
 		getCurrentTime().getTime() - webhookReceivedTime.getTime();
+	const webhookStatus = status?.toString() || "none";
 
 	contextLogger.info(
-		{ webhookName },
-		`Webhook processed in ${timeToProcessWebhookEvent}`
+		{ webhookName, status: webhookStatus },
+		`Webhook processed in ${timeToProcessWebhookEvent} milliseconds`
 	);
 
 	const tags = {
 		webhookName,
-		status: status?.toString() || "none",
+		status: webhookStatus,
 	};
 
 	statsd.histogram(
