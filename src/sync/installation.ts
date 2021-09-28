@@ -19,6 +19,7 @@ import { metricHttpRequest, metricSyncStatus, metricTaskStatus } from "../config
 import { getLogger } from "../config/logger";
 import Queue from "bull";
 import { booleanFlag, BooleanFlags, stringFlag, StringFlags } from "../config/feature-flags";
+import { incrementCursor } from "./cursors";
 
 const logger = getLogger("sync.installation");
 
@@ -42,7 +43,7 @@ type TaskType = "pull" | "commit" | "branch";
 
 const taskTypes = Object.keys(tasks) as TaskType[];
 
-const completedTaskStatuses : TaskStatus[] = ["complete", "failed"];
+const completedTaskStatuses: TaskStatus[] = ["complete", "failed"];
 
 const updateNumberOfReposSynced = async (
 	repos: Repositories,
@@ -233,13 +234,18 @@ export const isNotFoundError = (
 	const isNotFoundError = isNotFoundErrorType?.length > 0 || err?.status === 404;
 
 	isNotFoundError &&
-		logger.info(
-			{ job, task: nextTask },
-			"Repository deleted after discovery, skipping initial sync"
-		);
+	logger.info(
+		{ job, task: nextTask },
+		"Repository deleted after discovery, skipping initial sync"
+	);
 
 	return isNotFoundError;
 };
+
+async function failTask(subscription: SubscriptionClass, task: Task) {
+	await subscription.updateRepoSyncStateItem(task.repositoryId, getStatusKey(task.task as TaskType), "failed");
+	statsd.increment(metricTaskStatus.failed, [`type: ${task.task}`]);
+}
 
 // TODO: type queues
 export const processInstallation =
@@ -425,14 +431,24 @@ export const processInstallation =
 
 				if (await booleanFlag(BooleanFlags.CONTINUE_SYNC_ON_ERROR, false, jiraHost)) {
 
-					// TODO: add the jiraHost to the logger with logger.child()
-					const host = subscription.jiraHost || "none";
-					logger.warn({ job, task: nextTask, err, jiraHost: host }, "Task failed, continuing with next task");
-
-					// marking the current task as failed
-					await subscription.updateRepoSyncStateItem(nextTask.repositoryId, getStatusKey(nextTask.task as TaskType), "failed");
-
-					statsd.increment(metricTaskStatus.failed, [`type: ${nextTask.task}`]);
+					if (nextTask.cursor && nextTask.task === "commit" || nextTask.task === "pull") {
+						const nextCursor = incrementCursor(nextTask.cursor, 5, nextTask.task);
+						logger.warn({
+							job,
+							task: nextTask,
+							err,
+							jiraHost: subscription.jiraHost
+						}, "Task failed, continuing with next page");
+						await subscription.updateRepoSyncStateItem(nextTask.repositoryId, getCursorKey(nextTask.task as TaskType), nextCursor);
+					} else {
+						logger.warn({
+							job,
+							task: nextTask,
+							err,
+							jiraHost: subscription.jiraHost
+						}, "Task failed, continuing with next task");
+						await failTask(subscription, nextTask);
+					}
 
 					// queueing the job again to pick up the next task
 					queues.installation.add(job.data);
