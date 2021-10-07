@@ -1,7 +1,7 @@
 import transformDeployment from "../transforms/deployment";
 import { Context } from "probot/lib/context";
 
-export default async (context: Context, jiraClient): Promise<void> => {
+export default async (context: Context, jiraHost: string, jiraClient): Promise<void> => {
 	const jiraPayload = await transformDeployment(context);
 
 	if (!jiraPayload) {
@@ -9,6 +9,6 @@ export default async (context: Context, jiraClient): Promise<void> => {
 		return;
 	}
 
-	context.log(`Sending deployment info to Jira: ${jiraClient.baseURL}`)
+	context.log(`Sending deployment info to Jira: ${jiraHost}`)
 	await jiraClient.deployment.submit(jiraPayload);
 };

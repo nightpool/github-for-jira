@@ -6,6 +6,7 @@ import statsd from "../../config/statsd";
 import { getLogger } from "../../config/logger";
 import { metricHttpRequest } from "../../config/metric-names";
 import { createQueryStringHash, encodeSymmetric } from "atlassian-jwt";
+import { isDiagnosticsEnabled } from "../../util/diagnostics";
 
 const instance = process.env.INSTANCE_NAME;
 const iss = `com.github.integration${instance ? `.${instance}` : ""}`;
@@ -83,42 +84,45 @@ function getErrorMiddleware(logger: Logger) {
 		 * @param {import("axios").AxiosError} error - The error response from Axios
 		 * @returns {Promise<Error>} The rejected promise
 		 */
-		(error: AxiosError): Promise<Error> => {
+		async (error: AxiosError): Promise<Error> => {
 			if (error?.response) {
 				const status = error.response.status;
 
-				// truncating the detail message returned from Jira to 200 characters
 				const errorMessage = getJiraErrorMessages(status);
-				// Creating an object that isn't of type Error as bunyan handles it differently
-				// Log appropriate level depending on status - WARN: 300-499, ERROR: everything else
-				(status >= 300 && status < 500 ? logger.warn : logger.error)(error, errorMessage);
+				const logFunction = (status >= 300 && status < 500 ? logger.warn : logger.error);
+
+				logFunction(
+					{
+						jiraRequest: {
+							error,
+							errorMessage,
+							queryParams: error.response.config?.urlParams,
+							httpMethod: error.response.config?.method?.toUpperCase(),
+							url: error.response.config?.url,
+							httpStatus: error.response.status,
+							responseData: error.response.data
+						}
+					}, "call to Jira errored");
+
 			}
 			return Promise.reject(error);
 		});
 }
 
-/**
- * Middleware to enhance successful requests in Jira.
- *
- * @param {import("probot").Logger} logger - The probot logger instance
- */
-function getSuccessMiddleware(logger: Logger) {
+function getSuccessMiddleware(jiraHost: string, logger: Logger) {
 	return (
-		/**
-		 * DEBUG log the response info from Jira
-		 *
-		 * @param {import("axios").AxiosResponse} response - The response from axios
-		 * @returns {import("axios").AxiosResponse} The axios response
-		 */
-		(response) => {
+
+		async (response) => {
 			logger.debug(
 				{
-					params: response.config.urlParams
-				},
-				`Jira request: ${response.config.method.toUpperCase()} ${
-					response.config.originalUrl
-				} - ${response.status} ${response.statusText}
-				Response data: ${JSON.stringify(response.data)}`
+					jiraRequest: {
+						queryParams: response.config?.urlParams,
+						httpMethod: response.config?.method?.toUpperCase(),
+						url: response.config?.originalUrl,
+						httpStatus: response.status,
+						responseData: await isDiagnosticsEnabled(jiraHost) ? response.data : "diagnostics disabled"
+					}
+				}, "call to Jira successful"
 			);
 
 			return response;
@@ -207,7 +211,7 @@ export const extractPath = (someUrl = ""): string =>
  * @returns {import("axios").AxiosResponse} The response object.
  */
 const instrumentRequest = (response) => {
-	if(!response) {
+	if (!response) {
 		return;
 	}
 	const requestDurationMs = Number(
@@ -247,13 +251,13 @@ const instrumentFailedRequest = (logger) => {
  * just-in-time add the token to a request before sending it.
  */
 export default (
-	baseURL: string,
+	jiraHost: string,
 	secret: string,
 	logger?: Logger
 ): AxiosInstance => {
 	logger = logger || getLogger("jira.client.axios");
 	const instance = axios.create({
-		baseURL,
+		baseURL: jiraHost,
 		timeout: +process.env.JIRA_TIMEOUT || 30000
 	});
 
@@ -267,7 +271,7 @@ export default (
 	instance.interceptors.request.use(getUrlMiddleware());
 
 	instance.interceptors.response.use(
-		getSuccessMiddleware(logger),
+		getSuccessMiddleware(jiraHost, logger),
 		getErrorMiddleware(logger)
 	);
 

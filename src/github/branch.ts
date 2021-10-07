@@ -3,7 +3,7 @@ import { Context } from "probot/lib/context";
 import issueKeyParser from "jira-issue-key-parser";
 import { isEmpty } from "../jira/util/isEmpty";
 
-export const createBranch = async (context: Context, jiraClient): Promise<void> => {
+export const createBranch = async (context: Context, jiraHost: string, jiraClient): Promise<void> => {
 	const jiraPayload = await transformBranch(context);
 
 	if (!jiraPayload) {
@@ -14,12 +14,12 @@ export const createBranch = async (context: Context, jiraClient): Promise<void> 
 		return;
 	}
 
-	context.log(`Sending jira update for create branch event for hostname: ${jiraClient.baseURL}`)
+	context.log(`Sending jira update for create branch event for hostname: ${jiraHost}`)
 
 	await jiraClient.devinfo.repository.update(jiraPayload);
 };
 
-export const deleteBranch = async (context, jiraClient): Promise<void> => {
+export const deleteBranch = async (context, _: string, jiraClient): Promise<void> => {
 	const issueKeys = issueKeyParser().parse(context.payload.ref);
 
 	if (isEmpty(issueKeys)) {

@@ -1,14 +1,14 @@
 import { Context } from "probot/lib/context";
 import JiraClient from "../models/jira-client";
 
-export default async (context: Context, _: JiraClient, util): Promise<void> => {
+export default async (context: Context, _: string, __: JiraClient, util): Promise<void> => {
 	const { comment } = context.payload;
 
 	let linkifiedBody;
 	try {
 		linkifiedBody = await util.unfurl(comment.body);
 		if (!linkifiedBody) {
-			context.log.debug({ noop: "no_linkified_body_issue_comment" }, "Halting futher execution for issueComment since linkifiedBody is empty");
+			context.log.debug({ noop: "no_linkified_body_issue_comment" }, "Halting further execution for issueComment since linkifiedBody is empty");
 			return;
 		}
 	} catch (err) {

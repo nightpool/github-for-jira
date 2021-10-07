@@ -3,13 +3,15 @@ import * as Sentry from "@sentry/node";
 
 import AxiosErrorEventDecorator from "../models/axios-error-event-decorator";
 import SentryScopeProxy from "../models/sentry-scope-proxy";
-import { Subscription } from "../models";
 import getJiraClient from "../jira/client";
 import getJiraUtil from "../jira/util";
 import enhanceOctokit from "../config/enhance-octokit";
 import { Context } from "probot/lib/context";
 import { booleanFlag, BooleanFlags } from "../config/feature-flags";
-import {getLogger} from "../config/logger";
+import { getLogger } from "../config/logger";
+import Subscription from "../models/subscription";
+import { addTracingInfo, isDiagnosticsEnabled, Trace } from "../util/diagnostics";
+import { isEmpty } from "../jira/util/isEmpty";
 
 
 const logger = getLogger("github.webhooks")
@@ -17,7 +19,7 @@ const logger = getLogger("github.webhooks")
 // Returns an async function that reports errors errors to Sentry.
 // This works similar to Sentry.withScope but works in an async context.
 // A new Sentry hub is assigned to context.sentry and can be used later to add context to the error message.
-const withSentry = function(callback) {
+const withSentry = function (callback) {
 	return async (context) => {
 
 		context.sentry = new Sentry.Hub(Sentry.getCurrentHub().getClient());
@@ -38,6 +40,40 @@ const withSentry = function(callback) {
 	};
 };
 
+const getSubscriptions = async (context: CustomContext, gitHubInstallationId: number): Promise<Subscription[]> => {
+
+	// Edit actions are not allowed because they trigger this Jira integration to write data in GitHub and can trigger events, causing an infinite loop.
+	// State change actions are allowed because they're one-time actions, therefore they won’t cause a loop.
+	if ((context.payload?.sender?.type === "Bot" && !isStateChangeOrDeploymentAction(context.payload.action)) && !isStateChangeOrDeploymentAction(context.name)) {
+		context.log({
+			noop: "bot",
+			botId: context.payload?.sender?.id,
+			botLogin: context.payload?.sender?.login
+		}, "Halting further execution since the sender is a bot and action is not a state change nor a deployment");
+		return [];
+	}
+
+	if (isFromIgnoredRepo(context.payload)) {
+		context.log(
+			{ noop: "ignored_repo" },
+			"Halting further execution since the repository is explicitly ignored"
+		);
+		return [];
+	}
+
+	const subscriptions = await Subscription.getAllForInstallation(gitHubInstallationId);
+	const jiraSubscriptionsCount = subscriptions.length;
+	if (!jiraSubscriptionsCount) {
+		context.log(
+			{ noop: "no_subscriptions" },
+			"Halting further execution since no subscriptions were found."
+		);
+		return [];
+	}
+
+	return subscriptions;
+}
+
 // TODO: We really should fix this...
 const isFromIgnoredRepo = (payload) =>
 	// These point back to a repository for an installation that
@@ -56,9 +92,29 @@ export class CustomContext extends Context {
 	timedout: number;
 }
 
+function setSentryContext(context: CustomContext, webhookEvent: string, gitHubInstallationId) {
+	context.sentry.setExtra("GitHub Payload", {
+		event: webhookEvent,
+		action: context.payload?.action,
+		id: context.id,
+		repo: context.payload?.repository ? context.repo() : undefined,
+		payload: context.payload
+	});
+
+	context.sentry.setTag(
+		"transaction",
+		`webhook:${context.name}.${context.payload.action}`
+	);
+
+	context.sentry.setTag(
+		"gitHubInstallationId",
+		gitHubInstallationId.toString()
+	);
+}
+
 // TODO: fix typings
 export default (
-	callback: (context: any, jiraClient: any, util: any) => Promise<void>
+	callback: (context: any, jiraHost: string, jiraClient: any, util: any) => Promise<void>
 ) => {
 	return withSentry(async (context: CustomContext) => {
 		enhanceOctokit(context.github);
@@ -68,77 +124,41 @@ export default (
 			webhookEvent = `${webhookEvent}.${context.payload.action}`;
 		}
 
-		context.sentry.setExtra("GitHub Payload", {
-			event: webhookEvent,
-			action: context.payload?.action,
-			id: context.id,
-			repo: context.payload?.repository ? context.repo() : undefined,
-			payload: context.payload
-		});
-
 		const repoName = context.payload?.repository?.name || "none"
 		const orgName = context.payload?.repository?.owner?.name || "none"
-
 		const gitHubInstallationId = Number(context.payload?.installation?.id);
 
-		//TODO Remove this line and uncomment the next one to get rid of payloads in logs
-		const loggerWithWebhookParams = logger.child({ webhookId: context.id, repoName, orgName, gitHubInstallationId, event: webhookEvent, payload: context.payload });
-		//const loggerWithWebhookParams = logger.child({ webhookId: context.id, repoName, orgName, gitHubInstallationId });
-		context.log = loggerWithWebhookParams;
+		setSentryContext(context, webhookEvent, gitHubInstallationId);
 
-		// Edit actions are not allowed because they trigger this Jira integration to write data in GitHub and can trigger events, causing an infinite loop.
-		// State change actions are allowed because they're one-time actions, therefore they won’t cause a loop.
-		if ((context.payload?.sender?.type === "Bot" && !isStateChangeOrDeploymentAction(context.payload.action)) && !isStateChangeOrDeploymentAction(context.name)) {
-			context.log({
-				noop: "bot",
-				botId: context.payload?.sender?.id,
-				botLogin: context.payload?.sender?.login
-			}, "Halting further execution since the sender is a bot and action is not a state change nor a deployment");
+		const trace: Trace = {
+			webhookId: context.id,
+			webhookType: webhookEvent,
+			installationId: gitHubInstallationId,
+			organizationName: orgName,
+			repositoryName: repoName
+		};
+		context.log = addTracingInfo(logger, trace);
+
+		const subscriptions = await getSubscriptions(context, gitHubInstallationId);
+		if (isEmpty(subscriptions)) {
 			return;
 		}
 
-		if (isFromIgnoredRepo(context.payload)) {
-			context.log(
-				{
-					noop: "ignored_repo",
-					installation_id: context.payload?.installation?.id,
-					repository_id: context.payload?.repository?.id
-				},
-				"Halting further execution since the repository is explicitly ignored"
-			);
-			return;
-		}
+		context.log(`Processing event for ${subscriptions.length} jira instances`);
 
-		const subscriptions = await Subscription.getAllForInstallation(gitHubInstallationId);
-		const jiraSubscriptionsCount = subscriptions.length;
-		if (!jiraSubscriptionsCount) {
-			context.log(
-				{ noop: "no_subscriptions", orgName: orgName },
-				"Halting further execution since no subscriptions were found."
-			);
-			return;
-		}
-
-		context.log(`Processing event for ${jiraSubscriptionsCount} jira instances`);
-
-		context.sentry.setTag(
-			"transaction",
-			`webhook:${context.name}.${context.payload.action}`
-		);
-
-		for(const subscription of subscriptions) {
+		for (const subscription of subscriptions) {
 			const { jiraHost } = subscription;
 			context.sentry.setTag("jiraHost", jiraHost);
-			context.sentry.setTag(
-				"gitHubInstallationId",
-				gitHubInstallationId.toString()
-			);
 			context.sentry.setUser({ jiraHost, gitHubInstallationId });
-			context.log = loggerWithWebhookParams.child({ jiraHost });
-			context.log("Processing event for Jira Host");
 
+			context.log = addTracingInfo(context.log, { jiraHost });
+			if (await isDiagnosticsEnabled(jiraHost)) {
+				context.log.info({ payload: context.payload }, "webhook payload  (see field 'payload')");
+			}
+
+			// TODO: clean up feature flag
 			if (await booleanFlag(BooleanFlags.MAINTENANCE_MODE, false, jiraHost)) {
-				context.log(`Maintenance mode ENABLED for jira host ${jiraHost} - Ignoring event of type ${webhookEvent}`);
+				context.log({ noop: "maintenance_mode" }, "Ignoring event because maintenance mode is enabled.");
 				continue;
 			}
 
@@ -172,9 +192,9 @@ export default (
 			const util = getJiraUtil(jiraClient);
 
 			try {
-				await callback(context, jiraClient, util);
+				await callback(context, jiraHost, jiraClient, util);
 			} catch (err) {
-				context.log.error(err, `Error processing the event for Jira hostname '${jiraHost}'`);
+				context.log.error(err, `Error processing webhook for '${jiraHost}'`);
 				context.sentry.captureException(err);
 			}
 		}

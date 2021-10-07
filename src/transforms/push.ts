@@ -7,12 +7,14 @@ import enhanceOctokit from "../config/enhance-octokit";
 import { Application } from "probot";
 import { getLogger } from "../config/logger";
 import { JobOptions } from "bull";
+import { addTracingInfo, isDiagnosticsEnabled } from "../util/diagnostics";
+import { LoggerWithTarget } from "probot/lib/wrap-logger";
 
 // TODO: define better types for this file
 
 const logger = getLogger("transforms.push");
 
-const mapFile = (githubFile:any, repoName: string, repoOwner: string, commitHash: string) => {
+const mapFile = (githubFile: any, repoName: string, repoOwner: string, commitHash: string) => {
 	// changeType enum: [ "ADDED", "COPIED", "DELETED", "MODIFIED", "MOVED", "UNKNOWN" ]
 	// on github when a file is renamed we get two "files": one added, one removed
 	const mapStatus = {
@@ -32,7 +34,7 @@ const mapFile = (githubFile:any, repoName: string, repoOwner: string, commitHash
 	};
 }
 
-export function createJobData(payload, jiraHost: string) {
+export async function createJobData(logger: LoggerWithTarget, payload, jiraHost: string) {
 	// Store only necessary repository data in the queue
 	const { id, name, full_name, html_url, owner } = payload.repository;
 
@@ -44,6 +46,7 @@ export function createJobData(payload, jiraHost: string) {
 		owner
 	};
 
+	const allIssueKeys = [];
 	const shas = [];
 	for (const commit of payload.commits) {
 		const issueKeys = issueKeyParser().parse(commit.message);
@@ -56,7 +59,13 @@ export function createJobData(payload, jiraHost: string) {
 		// Only store the sha and issue keys. All other data will be requested from GitHub as part of the job
 		// Creates an array of shas for the job processor to work on
 		shas.push({ id: commit.id, issueKeys });
+		allIssueKeys.push(...issueKeys);
 	}
+
+	if (await isDiagnosticsEnabled(jiraHost)) {
+		logger.info({ issueKeys: allIssueKeys }, "extracted issue keys from commits (see field 'issueKeys')")
+	}
+
 	return {
 		repository,
 		shas,
@@ -66,13 +75,20 @@ export function createJobData(payload, jiraHost: string) {
 	};
 }
 
-export async function enqueuePush(payload: unknown, jiraHost: string, options?: JobOptions) {
-	await queues.push.add(createJobData(payload, jiraHost), options);
+export async function enqueuePush(logger: LoggerWithTarget, payload: unknown, jiraHost: string, options?: JobOptions) {
+	await queues.push.add(await createJobData(logger, payload, jiraHost), options);
 }
 
 export function processPush(app: Application) {
 	return async (job): Promise<void> => {
-		let log = logger;
+
+		const log = addTracingInfo(logger, {
+			webhookId: job.data.webhookId || "none",
+			repositoryName: job.data?.repo?.name,
+			organizationName: job.data?.repo?.owner,
+			installationId: job.installationId
+		});
+
 		try {
 			const {
 				repository,
@@ -82,13 +98,7 @@ export function processPush(app: Application) {
 				jiraHost
 			} = job.data;
 
-			const webhookId = job.data.webhookId || "none";
-
-			log = logger.child({webhookId: webhookId,
-				repoName: repo,
-				orgName: owner.name })
-
-			log.info({ installationId }, "Processing push");
+			log.info("Processing push");
 
 			const subscription = await Subscription.getSingleInstallation(
 				jiraHost,

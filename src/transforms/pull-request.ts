@@ -3,6 +3,8 @@ import { isEmpty } from "../jira/util/isEmpty";
 import { getJiraId } from "../jira/util/id";
 import _ from "lodash";
 import { Octokit } from "@octokit/rest";
+import { LoggerWithTarget } from "probot/lib/wrap-logger";
+import { isDiagnosticsEnabled } from "../util/diagnostics";
 
 function mapStatus(status: string, merged_at?: string) {
 	if (status === "merged") return "MERGED";
@@ -42,14 +44,19 @@ function mapReviews(reviews) {
 }
 
 // TODO: define arguments and return
-export default (pullRequest: Octokit.PullsGetResponse, reviews?: Octokit.PullsListReviewsResponse) => {
+export default async (logger: LoggerWithTarget, jiraHost: string, pullRequest: Octokit.PullsGetResponse, reviews?: Octokit.PullsListReviewsResponse) => {
 
 	// This is the same thing we do in sync, concatenating these values
 	const issueKeys = issueKeyParser().parse(
 		`${pullRequest.title}\n${pullRequest.head.ref}`
 	);
 
+	if (await isDiagnosticsEnabled(jiraHost)) {
+		logger.info({ issueKeys }, "extracted issue keys from pull request  (see field 'issueKeys')")
+	}
+
 	if (isEmpty(issueKeys) || !pullRequest?.head?.repo) {
+		logger.info("no issue keys found in pull request");
 		return undefined;
 	}
 

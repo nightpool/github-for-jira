@@ -1,7 +1,7 @@
 import { CustomContext } from "./middleware";
 import JiraClient from "../models/jira-client";
 
-export default async (context: CustomContext, _: JiraClient, util): Promise<void> => {
+export default async (context: CustomContext, _: string, __: JiraClient, util): Promise<void> => {
 	const { issue } = context.payload;
 
 	let linkifiedBody;

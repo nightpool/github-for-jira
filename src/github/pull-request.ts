@@ -3,8 +3,9 @@ import issueKeyParser from "jira-issue-key-parser";
 
 import { Context } from "probot/lib/context";
 import { isEmpty } from "../jira/util/isEmpty";
+import { addTracingInfo, isDiagnosticsEnabled } from "../util/diagnostics";
 
-export default async (context: Context, jiraClient, util): Promise<void> => {
+export default async (context: Context, jiraHost: string, jiraClient, util): Promise<void> => {
 
 	const {
 		pull_request,
@@ -16,6 +17,8 @@ export default async (context: Context, jiraClient, util): Promise<void> => {
 		changes
 	} = context.payload;
 
+	context.log = addTracingInfo(context.log, { pullRequestUrl: pull_request?.url })
+
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let reviews: any = {};
 	try {
@@ -25,20 +28,19 @@ export default async (context: Context, jiraClient, util): Promise<void> => {
 			pull_number: pull_request.number
 		});
 	} catch (e) {
-		context.log.warn(
-			{
-				err: e,
-				payload: context.payload,
-				pull_request
-			},
+		context.log.warn({ err: e },
 			"Missing Github Permissions: Can't retrieve reviewers"
 		);
 	}
 
-	const jiraPayload = transformPullRequest(
+	const jiraPayload = await transformPullRequest(
+		context.log,
+		jiraHost,
 		pull_request,
 		reviews.data
 	);
+
+	context.log.info({ jiraPayload }, "transformed pull request");
 
 	// Deletes PR link to jira if ticket id is removed from PR title
 	if (!jiraPayload && changes?.title) {
@@ -59,17 +61,21 @@ export default async (context: Context, jiraClient, util): Promise<void> => {
 			await context.github.issues.update(editedPullRequest);
 		}
 	} catch (err) {
-		context.log.warn({ err, body: pull_request.body, pullRequestNumber: pull_request.number }, "Error while trying to update PR body with links to Jira ticket");
+		context.log.warn({
+			err,
+			body: pull_request.body,
+		}, "Error while trying to update PR body with links to Jira ticket");
+
+		if (await isDiagnosticsEnabled(jiraHost)) {
+			context.log.info({ pullRequestBody: pull_request.body }, "pull request body (see field 'pullRequestBody')");
+		}
 	}
 
 	if (!jiraPayload) {
-		context.log.debug(
-			{ pullRequestNumber: pull_request.number },
-			"Halting futher execution for pull request since jiraPayload is empty"
-		);
+		context.log.debug("Halting further execution for pull request since jiraPayload is empty");
 		return;
 	}
 
-	context.log({ pullRequestNumber: pull_request.number }, `Sending pull request update to Jira ${jiraClient.baseURL}`);
+	context.log(`Sending pull request update to Jira ${jiraClient.baseURL}`);
 	await jiraClient.devinfo.repository.update(jiraPayload);
 };

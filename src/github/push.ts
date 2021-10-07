@@ -3,7 +3,7 @@ import issueKeyParser from "jira-issue-key-parser";
 import { isEmpty } from "../jira/util/isEmpty";
 import { Context } from "probot/lib/context";
 
-export default async (context: Context, jiraClient): Promise<void> => {
+export default async (context: Context, jiraHost: string): Promise<void> => {
 	// Copy the shape of the context object for processing
 	// but filter out any commits that don't have issue keys
 	// so we don't have to process them.
@@ -24,7 +24,7 @@ export default async (context: Context, jiraClient): Promise<void> => {
 	if (payload.commits?.length === 0) {
 		context.log(
 			{ noop: "no_commits" },
-			"Halting further execution for push since no commits were found for the payload"
+			"Halting further execution for push since no commits with issue keys were found for the payload"
 		);
 		return;
 	}
@@ -35,5 +35,5 @@ export default async (context: Context, jiraClient): Promise<void> => {
 	// data we need for Jira, send this to a background job
 	// so we can close the http connection as soon as the jobs
 	// are in the queue.  Set as priority 1 to get this done before any other sync.
-	await enqueuePush(payload, jiraClient.baseURL, { priority: 1 });
+	await enqueuePush(context.log, payload, jiraHost, { priority: 1 });
 };
