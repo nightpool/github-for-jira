@@ -56,7 +56,7 @@ const callQueues = async () => {
 		.filter(key => /^SQS_.*_QUEUE_URL$/.test(key))
 		.map(key => envVars[key]);
 	console.info(`Checking for localstack initialization...`);
-	if (URLs.length) {
+	/*if (URLs.length) {
 		const url = new URL(URLs[0]);
 		const response = await axios.get(`${url.protocol}//${url.host}/health`, { responseType: "json" });
 		if (response.data?.services?.sqs !== "running") {
@@ -64,7 +64,7 @@ const callQueues = async () => {
 			return Promise.reject();
 		}
 		console.info(`localstack initialized.`);
-	}
+	}*/
 
 	console.info(`Calling queues: ${URLs.join(", ")}`);
 	return Promise.all(
